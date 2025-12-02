@@ -1,0 +1,3 @@
+# Python dependencies for n8n workflow generator
+# No external dependencies required - uses only standard library
+

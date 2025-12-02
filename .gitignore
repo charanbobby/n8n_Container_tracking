@@ -1,0 +1,30 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# n8n
+workflow.json
+
+# API Keys (if stored in separate config)
+config.json
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+
