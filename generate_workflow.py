@@ -9,19 +9,79 @@ This script generates an n8n workflow JSON file that:
 """
 
 import json
+import os
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Dict, Any, List
 
-# Configuration
-OPENROUTER_API_KEY = "YOUR_OPENROUTER_API_KEY_HERE"  # Replace with your API key
-OPENROUTER_MODEL = "openai/gpt-4o"  # You can change this to any OpenRouter model
-EMAIL_FROM = "sri.sunkara@silkandsnow.com"
+# Centralized prompt strings
+PROMPTS = {
+    "bill_system": (
+        "You are an expert at extracting container numbers from shipping documents. "
+        "Extract all container numbers from the provided text. Container numbers typically "
+        "follow formats like ABCD1234567 or ABCD 123456 7. Return ONLY a JSON object with "
+        "a 'container_numbers' array of strings."
+    ),
+    "pkl_system": (
+        "You read packing lists exported from Excel. "
+        "You are given one sheet as a JSON array of rows. "
+        "Each row is an array of cells in order: [cell_0, cell_1, ...]. Some rows are headers, some are product lines, some are totals.\n\n"
+        "Your tasks:\n\n"
+        "1. Identify which column is the SKU column (codes like SNSFNWO5006NR2, usually alphanumeric, stable per product line).\n"
+        "2. Identify which column is the line quantity column (count of units for that SKU).\n"
+        "   - Prefer columns whose header contains QTY or QUANTITY.\n"
+        "   - Do not use weights, CBM, dimensions, or totals as quantity.\n"
+        "3. For each product row with a SKU, output one object with:\n"
+        "   - sku (string)\n"
+        "   - qty_expected (number, quantity for that SKU on that row)\n"
+        "4. If the sheet contains a \"Total\" row (cells like Total, TOTAL etc.), extract the document-level total quantity from the appropriate quantity column.\n"
+        "5. Compute the sum of all your qty_expected values.\n"
+        "6. Set checksum_ok = true if your sum equals the document-level total quantity (when present), otherwise false.\n\n"
+        "Return ONLY a JSON object with this shape:\n"
+        "{\n"
+        "  \"items\": [{\"sku\": \"SNSFNWO5006NR2\", \"qty_expected\": 82}, ...],\n"
+        "  \"doc_total_qty_from_sheet\": 113,\n"
+        "  \"qty_sum\": 113,\n"
+        "  \"checksum_ok\": true\n"
+        "}"
+    ),
+}
+
+# Configuration dataclass
+@dataclass
+class WorkflowConfig:
+    openrouter_model: str
+    email_from: str = "sri.sunkara@silkandsnow.com"
+    gmail_cred_id: str = "1"
+    openrouter_cred_id: str = "1"
+    prompt_version: str = "2025-12-02-01"
 
 def generate_uuid():
     """Generate a UUID for n8n nodes"""
     return str(uuid.uuid4())
 
-def create_email_trigger_node():
+def create_openrouter_chat_node(name: str, position: List[int], config: WorkflowConfig) -> Dict[str, Any]:
+    """Create a shared OpenRouter Chat Model node"""
+    return {
+        "parameters": {
+            "model": config.openrouter_model,
+            "options": {}
+        },
+        "id": generate_uuid(),
+        "name": name,
+        "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+        "typeVersion": 1,
+        "position": position,
+        "credentials": {
+            "openRouterApi": {
+                "id": config.openrouter_cred_id,
+                "name": "OpenRouter account"
+            }
+        }
+    }
+
+def create_email_trigger_node(config: WorkflowConfig):
     """Create Gmail trigger node"""
     return {
         "parameters": {
@@ -34,7 +94,7 @@ def create_email_trigger_node():
             },
             "simple": False,
             "filters": {
-                "sender": EMAIL_FROM
+                "sender": config.email_from
             },
             "options": {
                 "downloadAttachments": True
@@ -46,12 +106,12 @@ def create_email_trigger_node():
         "typeVersion": 1,
         "position": [-768, 112],
         "webhookId": "gmail-trigger",
-        "credentials": {
-            "gmailOAuth2": {
-                "id": "1",
-                "name": "Gmail account"
+            "credentials": {
+                "gmailOAuth2": {
+                    "id": config.gmail_cred_id,
+                    "name": "Gmail account"
+                }
             }
-        }
     }
 
 
@@ -117,34 +177,46 @@ def create_classify_attachment_node():
         "parameters": {
             "mode": "runOnceForAllItems",
             "jsCode": """// Classify attachment by filename
-// Process all input items
 const allItems = [];
 const emailData = $('Gmail Trigger').item.json;
+
+function hasExt(name, ext) {
+  return name.toLowerCase().endsWith(ext.toLowerCase());
+}
+
+function containsWord(name, word) {
+  return new RegExp(`\\\\b${word}\\\\b`, 'i').test(name);
+}
 
 for (const inputItem of $input.all()) {
   const item = inputItem.json;
   const binary = inputItem.binary || {};
-  const filename = (item.filename || item.name || '').toLowerCase();
+  const filenameRaw = item.filename || item.name || '';
+  const filename = filenameRaw.toLowerCase();
 
   let attachmentType = 'unknown';
-  if (filename.includes('bill') && (filename.endsWith('.pdf') || filename.includes('.pdf'))) {
+
+  if ((containsWord(filename, 'bill') || containsWord(filename, 'bol')) && hasExt(filename, '.pdf')) {
     attachmentType = 'bill';
-  } else if (filename.includes('ci') && (filename.endsWith('.xlsx') || filename.includes('.xlsx'))) {
+  } else if (containsWord(filename, 'ci') && hasExt(filename, '.xlsx')) {
     attachmentType = 'commercial_invoice';
-  } else if ((filename.includes('pkl') || filename.includes('packaging')) && (filename.endsWith('.xlsx') || filename.includes('.xlsx'))) {
+  } else if (
+    (containsWord(filename, 'pkl') || containsWord(filename, 'pack') || containsWord(filename, 'packing')) &&
+    hasExt(filename, '.xlsx')
+  ) {
     attachmentType = 'packaging_list';
   }
 
   allItems.push({
     json: {
       ...item,
-      attachmentType: attachmentType,
-      filename: item.filename,
+      attachmentType,
+      filename: filenameRaw,
       emailSubject: emailData.subject || '',
       emailDate: emailData.date || '',
       emailFrom: emailData.from || emailData.sender || ''
     },
-    binary: binary
+    binary,
   });
 }
 
@@ -248,25 +320,13 @@ def create_filter_pkl_node():
     }
 
 
-def create_openrouter_model_node():
+def create_openrouter_model_node(config: WorkflowConfig):
     """Create OpenRouter Chat Model node"""
-    return {
-        "parameters": {
-            "model": OPENROUTER_MODEL,
-            "options": {}
-        },
-        "id": generate_uuid(),
-        "name": "OpenRouter Chat Model",
-        "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
-        "typeVersion": 1,
-        "position": [600, 16],
-        "credentials": {
-            "openRouterApi": {
-                "id": "1",
-                "name": "OpenRouter account"
-            }
-        }
-    }
+    return create_openrouter_chat_node("OpenRouter Chat Model", [600, 16], config)
+
+def create_openrouter_model_node_pkl(config: WorkflowConfig):
+    """Create OpenRouter Chat Model node for PKL path"""
+    return create_openrouter_chat_node("OpenRouter Chat Model1", [600, 208], config)
 
 def create_pdf_to_text_node():
     """Create node to convert PDF to text"""
@@ -315,7 +375,7 @@ return {
         "position": [800, 16]
     }
 
-def create_openrouter_bill_extraction_node():
+def create_openrouter_bill_extraction_node(config: WorkflowConfig):
     """Create Basic LLM Chain node to extract container numbers from bill"""
     return {
         "parameters": {
@@ -325,7 +385,7 @@ def create_openrouter_bill_extraction_node():
                 "messageValues": [
                     {
                         "id": "system",
-                        "message": "You are an expert at extracting container numbers from shipping documents. Extract all container numbers from the provided text. Container numbers typically follow formats like: ABCD1234567, ABCD 123456 7, or similar patterns with 4 letters followed by numbers. Return ONLY a JSON object with a 'container_numbers' array containing all found container numbers. If no container numbers are found, return an empty array."
+                        "message": PROMPTS["bill_system"]
                     },
                     {
                         "id": "user",
@@ -347,99 +407,122 @@ def create_openrouter_bill_extraction_node():
     }
 
 def create_parse_openrouter_response_node():
-    """Create node to parse LLM response"""
+    """Create Code node to parse LLM response and aggregate all container numbers"""
     return {
         "parameters": {
-            "assignments": {
-                "assignments": [
-                    {
-                        "id": generate_uuid(),
-                        "name": "container_numbers",
-                        "value": "={{ JSON.parse($json.response).container_numbers }}",
-                        "type": "array"
-                    },
-                    {
-                        "id": generate_uuid(),
-                        "name": "email_data",
-                        "value": "={{ $('Gmail Trigger').item.json }}",
-                        "type": "object"
-                    }
-                ]
-            },
-            "options": {}
+            "mode": "runOnceForAllItems",
+            "jsCode": """// Parse and aggregate all container numbers from LLM responses
+const allContainers = [];
+
+function extractJson(text) {
+  if (!text) return null;
+
+  // Remove fenced code blocks
+  text = text.replace(/```json([\\s\\S]*?)```/gi, '$1').trim();
+
+  // If it doesn't start with {, try to slice first {...} block
+  if (!text.trim().startsWith('{')) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end !== -1 && end > start) {
+      text = text.slice(start, end + 1);
+    }
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    return null;
+  }
+}
+
+for (const item of $input.all()) {
+  const text = item.json.text || item.json.response || '';
+  const parsed = extractJson(text);
+  if (!parsed) continue;
+
+  if (parsed.container_numbers && Array.isArray(parsed.container_numbers)) {
+    allContainers.push(...parsed.container_numbers);
+  }
+}
+
+// Remove duplicates and return single item with aggregated containers
+return [{
+  json: {
+    container_numbers: [...new Set(allContainers)]
+  }
+}];"""
         },
         "id": generate_uuid(),
         "name": "Parse Container Response",
-        "type": "n8n-nodes-base.set",
-        "typeVersion": 3.4,
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
         "position": [1224, 16]
     }
 
 
 def create_xlsx_read_node():
-    """Create node to read XLSX file"""
+    """Create node to read XLSX file - using Extract From File node which can handle XLSX"""
     return {
         "parameters": {
-            "operation": "read",
-            "binaryPropertyName": "data",
+            "operation": "xlsx",
             "options": {
                 "sheetName": "",
                 "range": "",
-                "headerRow": True
-            }
+                "headerRow": False
+            },
+            "binaryPropertyName": "data"
         },
         "id": generate_uuid(),
         "name": "Read XLSX",
-        "type": "n8n-nodes-base.spreadsheetFile",
-        "typeVersion": 3,
+        "type": "n8n-nodes-base.extractFromFile",
+        "typeVersion": 1,
         "position": [600, 208]
     }
 
-def create_prepare_pkl_data_node():
-    """Create Code node to prepare PKL data for LLM extraction"""
+def create_normalize_pkl_grid_node():
+    """Create Code node to prepare PKL data - send raw rows as JSON to LLM"""
     return {
         "parameters": {
-            "mode": "runOnceForEachItem",
-            "jsCode": """// Prepare PKL data for LLM extraction
-// The XLSX data should be in item.data after reading
-const item = $input.item.json;
-const binary = $input.item.binary || {};
+            "mode": "runOnceForAllItems",
+            "jsCode": """// Generic PKL pre-processor.
+// ExtractFromFile gives one item per row as json.row (your sample).
+// We do NOT assume any fixed columns; we just send all rows as JSON.
 
-// Get XLSX data (should be an array of rows)
-const xlsxData = item.data || [];
+const rows = $input.all()
+  .map(i => i.json.row || [])
+  .filter(r => Array.isArray(r) && r.length > 0);
 
-// Create chatInput field that LLM Chain expects
-return {
+// chatInput is a JSON string with the array-of-rows.
+return [{
   json: {
-    ...item,
-    chatInput: JSON.stringify(xlsxData),
-    data: xlsxData
-  },
-  binary: binary
-};"""
+    rows,
+    chatInput: JSON.stringify(rows)
+  }
+}];"""
         },
         "id": generate_uuid(),
-        "name": "Prepare PKL Data",
+        "name": "Normalize PKL Grid",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
         "position": [800, 208]
     }
 
-def create_openrouter_pkl_extraction_node():
+def create_openrouter_pkl_extraction_node(config: WorkflowConfig):
     """Create Basic LLM Chain node to extract SKU and quantities from PKL"""
     return {
         "parameters": {
             "promptType": "define",
-            "text": "={{ $json.chatInput || JSON.stringify($json.data) || '' }}",
+            "text": "={{ $json.chatInput }}",
             "messages": {
                 "messageValues": [
                     {
                         "id": "system",
-                        "message": "You are an expert at extracting SKU codes and quantities from packaging lists. Extract all SKU codes (format like SNSFNWO5006NR2 - typically starts with letters and contains alphanumeric characters) and their corresponding expected quantities (qty expected). Return ONLY a JSON object with an 'items' array, where each item has 'sku' (string) and 'qty_expected' (number) fields. If a row doesn't have a valid SKU, skip it."
+                        "message": PROMPTS["pkl_system"]
                     },
                     {
                         "id": "user",
-                        "message": "=Extract SKU codes and quantities from this packaging list data: {{ $json.chatInput || JSON.stringify($json.data) || '' }}"
+                        "message": "=Here is the sheet as JSON array-of-rows:\n\n{{ $json.chatInput }}"
                     }
                 ]
             },
@@ -457,51 +540,98 @@ def create_openrouter_pkl_extraction_node():
     }
 
 def create_parse_pkl_response_node():
-    """Create node to parse PKL extraction response"""
+    """Create Code node to parse PKL extraction response, aggregate items, and verify checksum"""
     return {
         "parameters": {
-            "assignments": {
-                "assignments": [
-                    {
-                        "id": generate_uuid(),
-                        "name": "pkl_items",
-                        "value": "={{ JSON.parse($json.response).items }}",
-                        "type": "array"
-                    },
-                    {
-                        "id": generate_uuid(),
-                        "name": "email_data",
-                        "value": "={{ $('Gmail Trigger').item.json }}",
-                        "type": "object"
-                    }
-                ]
-            },
-            "options": {}
+            "mode": "runOnceForAllItems",
+            "jsCode": """// Parse PKL LLM JSON and enforce our own checksum.
+
+const allItems = [];
+let docTotalFromSheet = null;
+let llmReportedSum = null;
+let llmChecksumOk = null;
+
+function extractJson(text) {
+  if (!text) return null;
+  text = text.replace(/```json[\\s\\S]*?```/gi, m => m.replace(/```json|```/gi, '')).trim();
+  if (!text.trim().startsWith('{')) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end !== -1 && end > start) {
+      text = text.slice(start, end + 1);
+    }
+  }
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    return null;
+  }
+}
+
+for (const item of $input.all()) {
+  const text = item.json.text || item.json.response || '';
+  const parsed = extractJson(text);
+  if (!parsed) continue;
+
+  if (Array.isArray(parsed.items)) {
+    allItems.push(...parsed.items);
+  }
+  if (parsed.doc_total_qty_from_sheet != null) {
+    docTotalFromSheet = Number(parsed.doc_total_qty_from_sheet);
+  }
+  if (parsed.qty_sum != null) {
+    llmReportedSum = Number(parsed.qty_sum);
+  }
+  if (typeof parsed.checksum_ok === 'boolean') {
+    llmChecksumOk = parsed.checksum_ok;
+  }
+}
+
+// Recompute sum ourselves
+const recomputedSum = allItems.reduce(
+  (acc, it) => acc + (Number(it.qty_expected) || 0),
+  0
+);
+
+let checksumOk = null;
+if (Number.isFinite(docTotalFromSheet)) {
+  checksumOk = recomputedSum === docTotalFromSheet;
+}
+
+return [{
+  json: {
+    pkl_items: allItems,
+    qty_sum: recomputedSum,
+    doc_total_qty: docTotalFromSheet,
+    checksum_ok: checksumOk,
+    llm_reported_sum: llmReportedSum,
+    llm_checksum_ok: llmChecksumOk
+  }
+}];"""
         },
         "id": generate_uuid(),
         "name": "Parse PKL Response",
-        "type": "n8n-nodes-base.set",
-        "typeVersion": 3.4,
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
         "position": [1224, 208]
     }
 
 def create_merge_node():
-    """Create node to merge all extracted data"""
+    """Create Code node to combine data from both parse nodes, handling timing delays"""
     return {
         "parameters": {
-            "mode": "combine",
-            "combineBy": "combineByPosition",
-            "options": {}
+            "mode": "runOnceForAllItems",
+            "jsCode": "// Combine container numbers and PKL items from both parse nodes\n// This handles timing delays by waiting for all inputs\nlet containerNumbers = [];\nlet pklItems = [];\n\n// Process all input items - they may come from either parse node\nfor (const item of $input.all()) {\n  const json = item.json || {};\n  \n  // Check if this item has container_numbers (from Parse Container Response)\n  if (json.container_numbers && Array.isArray(json.container_numbers)) {\n    containerNumbers = json.container_numbers;\n  }\n  \n  // Check if this item has pkl_items (from Parse PKL Response)\n  if (json.pkl_items && Array.isArray(json.pkl_items)) {\n    pklItems = json.pkl_items;\n  }\n}\n\n// Return combined result\nreturn [{\n  json: {\n    container_numbers: containerNumbers,\n    pkl_items: pklItems\n  }\n}];"
         },
         "id": generate_uuid(),
         "name": "Merge Results",
-        "type": "n8n-nodes-base.merge",
-        "typeVersion": 3,
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
         "position": [1448, 112]
     }
 
 def create_final_output_node():
-    """Create node to format final output"""
+    """Create node to format final output with only containers, SKUs, and quantities"""
     return {
         "parameters": {
             "assignments": {
@@ -509,32 +639,14 @@ def create_final_output_node():
                     {
                         "id": generate_uuid(),
                         "name": "container_numbers",
-                        "value": "={{ $json[0].json.container_numbers || [] }}",
+                        "value": "={{ $json.container_numbers || [] }}",
                         "type": "array"
                     },
                     {
                         "id": generate_uuid(),
                         "name": "sku_items",
-                        "value": "={{ $json[1].json.pkl_items || [] }}",
+                        "value": "={{ $json.pkl_items || [] }}",
                         "type": "array"
-                    },
-                    {
-                        "id": generate_uuid(),
-                        "name": "email_subject",
-                        "value": "={{ $json[0].json.email_data.subject || '' }}",
-                        "type": "string"
-                    },
-                    {
-                        "id": generate_uuid(),
-                        "name": "email_date",
-                        "value": "={{ $json[0].json.email_data.date || '' }}",
-                        "type": "string"
-                    },
-                    {
-                        "id": generate_uuid(),
-                        "name": "processed_at",
-                        "value": f"={datetime.now().isoformat()}",
-                        "type": "string"
                     }
                 ]
             },
@@ -547,30 +659,40 @@ def create_final_output_node():
         "position": [1672, 112]
     }
 
-def create_workflow():
+def validate_workflow(workflow: dict) -> None:
+    """Validate workflow structure - check that all connections reference valid nodes"""
+    node_names = {n["name"] for n in workflow["nodes"]}
+    for from_node, conn in workflow["connections"].items():
+        assert from_node in node_names, f"Unknown from-node: {from_node}"
+        for outputs in conn.get("main", []):
+            for dest in outputs:
+                assert dest["node"] in node_names, f"Unknown to-node: {dest['node']}"
+
+def create_workflow(config: WorkflowConfig):
     """Generate the complete n8n workflow"""
     
     # Create all nodes
-    email_trigger = create_email_trigger_node()
+    email_trigger = create_email_trigger_node(config)
     split_attachments = create_split_attachments_node()
     classify_attachment = create_classify_attachment_node()
     download_attachment = create_download_attachment_node()
     route_by_type = create_if_node_route_attachments()
     
-    # Create OpenRouter model node (shared by both extraction chains)
-    openrouter_model = create_openrouter_model_node()
+    # Create OpenRouter model nodes (one for each extraction chain)
+    openrouter_model = create_openrouter_model_node(config)
+    openrouter_model_pkl = create_openrouter_model_node_pkl(config)
     
     # Bill processing path - PDF extraction then prepare data
     pdf_to_text = create_pdf_to_text_node()
     prepare_bill_data = create_prepare_bill_data_node()
-    extract_containers = create_openrouter_bill_extraction_node()
+    extract_containers = create_openrouter_bill_extraction_node(config)
     parse_containers = create_parse_openrouter_response_node()
     
-    # PKL processing path - XLSX reading then prepare data
+    # PKL processing path - XLSX reading then normalize grid
     filter_pkl = create_filter_pkl_node()
     read_xlsx = create_xlsx_read_node()
-    prepare_pkl_data = create_prepare_pkl_data_node()
-    extract_pkl = create_openrouter_pkl_extraction_node()
+    normalize_pkl_grid = create_normalize_pkl_grid_node()
+    extract_pkl = create_openrouter_pkl_extraction_node(config)
     parse_pkl = create_parse_pkl_response_node()
     
     # Merge and output
@@ -599,7 +721,11 @@ def create_workflow():
         },
         openrouter_model["name"]: {
             "ai_languageModel": [
-                [{"node": extract_containers["name"], "type": "ai_languageModel", "index": 0}],
+                [{"node": extract_containers["name"], "type": "ai_languageModel", "index": 0}]
+            ]
+        },
+        openrouter_model_pkl["name"]: {
+            "ai_languageModel": [
                 [{"node": extract_pkl["name"], "type": "ai_languageModel", "index": 0}]
             ]
         },
@@ -619,9 +745,9 @@ def create_workflow():
             "main": [[{"node": read_xlsx["name"], "type": "main", "index": 0}]]
         },
         read_xlsx["name"]: {
-            "main": [[{"node": prepare_pkl_data["name"], "type": "main", "index": 0}]]
+            "main": [[{"node": normalize_pkl_grid["name"], "type": "main", "index": 0}]]
         },
-        prepare_pkl_data["name"]: {
+        normalize_pkl_grid["name"]: {
             "main": [[{"node": extract_pkl["name"], "type": "main", "index": 0}]]
         },
         extract_pkl["name"]: {
@@ -645,13 +771,14 @@ def create_workflow():
             download_attachment,
             route_by_type,
             openrouter_model,
+            openrouter_model_pkl,
             pdf_to_text,
             prepare_bill_data,
             extract_containers,
             parse_containers,
             filter_pkl,
             read_xlsx,
-            prepare_pkl_data,
+            normalize_pkl_grid,
             extract_pkl,
             parse_pkl,
             merge_results,
@@ -660,7 +787,8 @@ def create_workflow():
         "connections": connections,
         "pinData": {},
         "settings": {
-            "executionOrder": "v1"
+            "executionOrder": "v1",
+            "promptVersion": config.prompt_version
         },
         "staticData": None,
         "tags": [],
@@ -675,11 +803,15 @@ def main():
     """Main function to generate and save workflow"""
     print("Generating n8n workflow for Container Tracking Automation...")
     
-    if OPENROUTER_API_KEY == "YOUR_OPENROUTER_API_KEY_HERE":
-        print("⚠️  WARNING: Please set your OpenRouter API key in the script!")
-        print("   Edit OPENROUTER_API_KEY variable in generate_workflow.py")
+    # Load configuration from environment variables
+    config = WorkflowConfig(
+        openrouter_model=os.getenv("OPENROUTER_MODEL", "openai/gpt-4o"),
+    )
     
-    workflow = create_workflow()
+    workflow = create_workflow(config)
+    
+    # Validate workflow structure
+    validate_workflow(workflow)
     
     output_file = "workflow.json"
     with open(output_file, 'w', encoding='utf-8') as f:
@@ -688,10 +820,12 @@ def main():
     print(f"✅ Workflow generated successfully!")
     print(f"   Saved to: {output_file}")
     print(f"   Total nodes: {len(workflow['nodes'])}")
+    print(f"   Model: {config.openrouter_model}")
+    print(f"   Prompt version: {config.prompt_version}")
     print("\nNext steps:")
     print("1. Import workflow.json into n8n")
     print("2. Configure Gmail OAuth2 credentials")
-    print("3. Set OpenRouter API key in the HTTP Request nodes")
+    print("3. Configure OpenRouter API credentials in n8n")
     print("4. Test the workflow with a sample email")
 
 if __name__ == "__main__":

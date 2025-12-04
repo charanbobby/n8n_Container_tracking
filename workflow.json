@@ -18,7 +18,7 @@
           "downloadAttachments": true
         }
       },
-      "id": "996661ad-0336-48f9-8895-6393ee5f5a42",
+      "id": "b2f8e467-0702-4a03-a0ae-f54b126c23ce",
       "name": "Gmail Trigger",
       "type": "n8n-nodes-base.gmailTrigger",
       "typeVersion": 1,
@@ -39,7 +39,7 @@
         "mode": "runOnceForAllItems",
         "jsCode": "// Split Gmail attachments into separate items\n// Gmail provides attachments as binary fields: attachment_0, attachment_1, attachment_2, etc.\nconst allItems = [];\n\n// Process all input items\nfor (const inputItem of $input.all()) {\n  const binary = inputItem.binary || {};\n  const json = inputItem.json || {};\n  \n  // Find all attachment binary fields\n  const attachmentKeys = Object.keys(binary).filter(key => key.startsWith('attachment_'));\n  \n  // If no attachment_ keys found, check if binary has 'data' key (from previous processing)\n  if (attachmentKeys.length === 0 && binary.data) {\n    // Already split, pass through\n    allItems.push({\n      json: json,\n      binary: binary\n    });\n  } else {\n    // Create one item per attachment\n    for (const key of attachmentKeys) {\n      const attachmentNum = key.replace('attachment_', '');\n      const attachmentData = binary[key];\n      \n      allItems.push({\n        json: {\n          ...json,\n          attachmentKey: key,\n          attachmentIndex: parseInt(attachmentNum),\n          filename: attachmentData.fileName || attachmentData.filename || `attachment_${attachmentNum}`,\n          mimeType: attachmentData.mimeType || attachmentData.mime || 'application/octet-stream',\n          fileExtension: attachmentData.fileExtension || (attachmentData.fileName ? attachmentData.fileName.split('.').pop() : '')\n        },\n        binary: {\n          data: attachmentData\n        }\n      });\n    }\n  }\n}\n\nreturn allItems;"
       },
-      "id": "d7e947d3-3e6e-40b9-ad49-70e3f8a89459",
+      "id": "2237dcd5-ed2e-464f-a7b1-46b8aa613b02",
       "name": "Split Attachments",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -51,9 +51,9 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Classify attachment by filename\n// Process all input items\nconst allItems = [];\nconst emailData = $('Gmail Trigger').item.json;\n\nfor (const inputItem of $input.all()) {\n  const item = inputItem.json;\n  const binary = inputItem.binary || {};\n  const filename = (item.filename || item.name || '').toLowerCase();\n\n  let attachmentType = 'unknown';\n  if (filename.includes('bill') && (filename.endsWith('.pdf') || filename.includes('.pdf'))) {\n    attachmentType = 'bill';\n  } else if (filename.includes('ci') && (filename.endsWith('.xlsx') || filename.includes('.xlsx'))) {\n    attachmentType = 'commercial_invoice';\n  } else if ((filename.includes('pkl') || filename.includes('packaging')) && (filename.endsWith('.xlsx') || filename.includes('.xlsx'))) {\n    attachmentType = 'packaging_list';\n  }\n\n  allItems.push({\n    json: {\n      ...item,\n      attachmentType: attachmentType,\n      filename: item.filename,\n      emailSubject: emailData.subject || '',\n      emailDate: emailData.date || '',\n      emailFrom: emailData.from || emailData.sender || ''\n    },\n    binary: binary\n  });\n}\n\nreturn allItems;"
+        "jsCode": "// Classify attachment by filename\nconst allItems = [];\nconst emailData = $('Gmail Trigger').item.json;\n\nfunction hasExt(name, ext) {\n  return name.toLowerCase().endsWith(ext.toLowerCase());\n}\n\nfunction containsWord(name, word) {\n  return new RegExp(`\\\\b${word}\\\\b`, 'i').test(name);\n}\n\nfor (const inputItem of $input.all()) {\n  const item = inputItem.json;\n  const binary = inputItem.binary || {};\n  const filenameRaw = item.filename || item.name || '';\n  const filename = filenameRaw.toLowerCase();\n\n  let attachmentType = 'unknown';\n\n  if ((containsWord(filename, 'bill') || containsWord(filename, 'bol')) && hasExt(filename, '.pdf')) {\n    attachmentType = 'bill';\n  } else if (containsWord(filename, 'ci') && hasExt(filename, '.xlsx')) {\n    attachmentType = 'commercial_invoice';\n  } else if (\n    (containsWord(filename, 'pkl') || containsWord(filename, 'pack') || containsWord(filename, 'packing')) &&\n    hasExt(filename, '.xlsx')\n  ) {\n    attachmentType = 'packaging_list';\n  }\n\n  allItems.push({\n    json: {\n      ...item,\n      attachmentType,\n      filename: filenameRaw,\n      emailSubject: emailData.subject || '',\n      emailDate: emailData.date || '',\n      emailFrom: emailData.from || emailData.sender || ''\n    },\n    binary,\n  });\n}\n\nreturn allItems;"
       },
-      "id": "4cc0e13f-0569-4d2c-b923-5cc2c3cd3b19",
+      "id": "9484a2cf-072b-47cd-b603-04b200039386",
       "name": "Classify Attachment",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -67,7 +67,7 @@
         "mode": "runOnceForAllItems",
         "jsCode": "// Prepare attachment data for processing\n// Pass through all items as-is, ensuring binary is properly structured\nconst allItems = [];\n\nfor (const inputItem of $input.all()) {\n  allItems.push({\n    json: inputItem.json,\n    binary: inputItem.binary || {}\n  });\n}\n\nreturn allItems;"
       },
-      "id": "3fb7ce72-da47-4898-8a93-c6afbc6a93bd",
+      "id": "9570d62d-024c-444f-9e3a-82828bb126ef",
       "name": "Prepare Attachment",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -87,7 +87,7 @@
           },
           "conditions": [
             {
-              "id": "e71a86d0-d0d7-4b5f-81cd-4f9d263f9bee",
+              "id": "18a0ddd0-d562-498b-bf4e-6ad2d37a0685",
               "leftValue": "={{ $json.attachmentType }}",
               "rightValue": "bill",
               "operator": {
@@ -100,7 +100,7 @@
         },
         "options": {}
       },
-      "id": "aedfb2c8-577c-4c07-9fae-d697142150fc",
+      "id": "689b1acf-7bd2-46d6-8715-657401f82bea",
       "name": "Route by Type",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
@@ -114,7 +114,7 @@
         "model": "openai/gpt-4o",
         "options": {}
       },
-      "id": "663ddf6d-a963-44ac-89f4-2edbd5710af8",
+      "id": "49bf24d6-5795-41dc-be8c-18d11082f91f",
       "name": "OpenRouter Chat Model",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
       "typeVersion": 1,
@@ -131,13 +131,33 @@
     },
     {
       "parameters": {
+        "model": "openai/gpt-4o",
+        "options": {}
+      },
+      "id": "ed5c218e-bde8-4f0c-bb03-cd8d59adf2a5",
+      "name": "OpenRouter Chat Model1",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        600,
+        208
+      ],
+      "credentials": {
+        "openRouterApi": {
+          "id": "1",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
         "operation": "pdf",
         "options": {
           "joinPages": true
         },
         "binaryPropertyName": "data"
       },
-      "id": "02739f30-7e81-4def-9ed6-c02fce0740a6",
+      "id": "efaa1145-5cf6-4327-ad81-8232e02de446",
       "name": "PDF to Text",
       "type": "n8n-nodes-base.extractFromFile",
       "typeVersion": 1,
@@ -151,7 +171,7 @@
         "mode": "runOnceForEachItem",
         "jsCode": "// Prepare bill data for LLM extraction\n// The PDF text should already be extracted in the 'text' field\nconst item = $input.item.json;\nconst binary = $input.item.binary || {};\n\n// Get text from extracted PDF\nconst textContent = item.text || '';\n\n// Create chatInput field that LLM Chain expects\nreturn {\n  json: {\n    ...item,\n    chatInput: textContent,\n    text: textContent\n  },\n  binary: binary\n};"
       },
-      "id": "31dd5f82-8fee-4cb5-931c-fb8adaccf278",
+      "id": "fa5a4e06-481d-4415-81a8-58dd1a92381a",
       "name": "Prepare Bill Data",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -168,7 +188,7 @@
           "messageValues": [
             {
               "id": "system",
-              "message": "You are an expert at extracting container numbers from shipping documents. Extract all container numbers from the provided text. Container numbers typically follow formats like: ABCD1234567, ABCD 123456 7, or similar patterns with 4 letters followed by numbers. Return ONLY a JSON object with a 'container_numbers' array containing all found container numbers. If no container numbers are found, return an empty array."
+              "message": "You are an expert at extracting container numbers from shipping documents. Extract all container numbers from the provided text. Container numbers typically follow formats like ABCD1234567 or ABCD 123456 7. Return ONLY a JSON object with a 'container_numbers' array of strings."
             },
             {
               "id": "user",
@@ -182,7 +202,7 @@
           }
         }
       },
-      "id": "8966b58f-ba75-43da-9367-dc137822cabb",
+      "id": "c14427bf-b39e-4204-b5ba-62bb3ee45cc6",
       "name": "Extract Container Numbers",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.5,
@@ -193,28 +213,13 @@
     },
     {
       "parameters": {
-        "assignments": {
-          "assignments": [
-            {
-              "id": "43292e93-b682-4f78-bc3f-9ff48646e728",
-              "name": "container_numbers",
-              "value": "={{ JSON.parse($json.response).container_numbers }}",
-              "type": "array"
-            },
-            {
-              "id": "13bcffe0-7ce9-4933-9a23-d27bf35182f3",
-              "name": "email_data",
-              "value": "={{ $('Gmail Trigger').item.json }}",
-              "type": "object"
-            }
-          ]
-        },
-        "options": {}
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse and aggregate all container numbers from LLM responses\nconst allContainers = [];\n\nfunction extractJson(text) {\n  if (!text) return null;\n\n  // Remove fenced code blocks\n  text = text.replace(/```json([\\s\\S]*?)```/gi, '$1').trim();\n\n  // If it doesn't start with {, try to slice first {...} block\n  if (!text.trim().startsWith('{')) {\n    const start = text.indexOf('{');\n    const end = text.lastIndexOf('}');\n    if (start !== -1 && end !== -1 && end > start) {\n      text = text.slice(start, end + 1);\n    }\n  }\n\n  try {\n    return JSON.parse(text);\n  } catch (e) {\n    return null;\n  }\n}\n\nfor (const item of $input.all()) {\n  const text = item.json.text || item.json.response || '';\n  const parsed = extractJson(text);\n  if (!parsed) continue;\n\n  if (parsed.container_numbers && Array.isArray(parsed.container_numbers)) {\n    allContainers.push(...parsed.container_numbers);\n  }\n}\n\n// Remove duplicates and return single item with aggregated containers\nreturn [{\n  json: {\n    container_numbers: [...new Set(allContainers)]\n  }\n}];"
       },
-      "id": "06e1c5f0-4c54-44c5-88ec-5d7c2d2edfb1",
+      "id": "ac6bcce0-e29c-494d-ba4a-52b0fd7b129a",
       "name": "Parse Container Response",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         1224,
         16
@@ -230,7 +235,7 @@
           },
           "conditions": [
             {
-              "id": "a92641d5-ff9b-4530-bb12-deeab3197ca7",
+              "id": "3bc3407e-5dc3-4591-92d2-5ee8fc63ae2b",
               "leftValue": "={{ $json.attachmentType }}",
               "rightValue": "packaging_list",
               "operator": {
@@ -243,7 +248,7 @@
         },
         "options": {}
       },
-      "id": "a8c1c6b1-c9b0-4c37-9229-c8810abe3400",
+      "id": "d9fb763f-0e4e-45e4-84a7-ae79321d9024",
       "name": "Filter PKL Only",
       "type": "n8n-nodes-base.filter",
       "typeVersion": 2,
@@ -254,18 +259,18 @@
     },
     {
       "parameters": {
-        "operation": "read",
-        "binaryPropertyName": "data",
+        "operation": "xlsx",
         "options": {
           "sheetName": "",
           "range": "",
-          "headerRow": true
-        }
+          "headerRow": false
+        },
+        "binaryPropertyName": "data"
       },
-      "id": "038c6de5-34a8-406d-8edb-9c58b3e0e495",
+      "id": "d75a91fa-5d15-4568-ab68-bbf1c349607c",
       "name": "Read XLSX",
-      "type": "n8n-nodes-base.spreadsheetFile",
-      "typeVersion": 3,
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
       "position": [
         600,
         208
@@ -273,11 +278,11 @@
     },
     {
       "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "// Prepare PKL data for LLM extraction\n// The XLSX data should be in item.data after reading\nconst item = $input.item.json;\nconst binary = $input.item.binary || {};\n\n// Get XLSX data (should be an array of rows)\nconst xlsxData = item.data || [];\n\n// Create chatInput field that LLM Chain expects\nreturn {\n  json: {\n    ...item,\n    chatInput: JSON.stringify(xlsxData),\n    data: xlsxData\n  },\n  binary: binary\n};"
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Generic PKL pre-processor.\n// ExtractFromFile gives one item per row as json.row (your sample).\n// We do NOT assume any fixed columns; we just send all rows as JSON.\n\nconst rows = $input.all()\n  .map(i => i.json.row || [])\n  .filter(r => Array.isArray(r) && r.length > 0);\n\n// chatInput is a JSON string with the array-of-rows.\nreturn [{\n  json: {\n    rows,\n    chatInput: JSON.stringify(rows)\n  }\n}];"
       },
-      "id": "3c5c071f-a536-41a1-b12d-ac5b302d9d8f",
-      "name": "Prepare PKL Data",
+      "id": "2e3995be-a72a-4f72-847d-28aa8c3c779b",
+      "name": "Normalize PKL Grid",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -288,16 +293,16 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "={{ $json.chatInput || JSON.stringify($json.data) || '' }}",
+        "text": "={{ $json.chatInput }}",
         "messages": {
           "messageValues": [
             {
               "id": "system",
-              "message": "You are an expert at extracting SKU codes and quantities from packaging lists. Extract all SKU codes (format like SNSFNWO5006NR2 - typically starts with letters and contains alphanumeric characters) and their corresponding expected quantities (qty expected). Return ONLY a JSON object with an 'items' array, where each item has 'sku' (string) and 'qty_expected' (number) fields. If a row doesn't have a valid SKU, skip it."
+              "message": "You read packing lists exported from Excel. You are given one sheet as a JSON array of rows. Each row is an array of cells in order: [cell_0, cell_1, ...]. Some rows are headers, some are product lines, some are totals.\n\nYour tasks:\n\n1. Identify which column is the SKU column (codes like SNSFNWO5006NR2, usually alphanumeric, stable per product line).\n2. Identify which column is the line quantity column (count of units for that SKU).\n   - Prefer columns whose header contains QTY or QUANTITY.\n   - Do not use weights, CBM, dimensions, or totals as quantity.\n3. For each product row with a SKU, output one object with:\n   - sku (string)\n   - qty_expected (number, quantity for that SKU on that row)\n4. If the sheet contains a \"Total\" row (cells like Total, TOTAL etc.), extract the document-level total quantity from the appropriate quantity column.\n5. Compute the sum of all your qty_expected values.\n6. Set checksum_ok = true if your sum equals the document-level total quantity (when present), otherwise false.\n\nReturn ONLY a JSON object with this shape:\n{\n  \"items\": [{\"sku\": \"SNSFNWO5006NR2\", \"qty_expected\": 82}, ...],\n  \"doc_total_qty_from_sheet\": 113,\n  \"qty_sum\": 113,\n  \"checksum_ok\": true\n}"
             },
             {
               "id": "user",
-              "message": "=Extract SKU codes and quantities from this packaging list data: {{ $json.chatInput || JSON.stringify($json.data) || '' }}"
+              "message": "=Here is the sheet as JSON array-of-rows:\n\n{{ $json.chatInput }}"
             }
           ]
         },
@@ -307,7 +312,7 @@
           }
         }
       },
-      "id": "a3c12669-71ca-4ca3-9e73-f426b16420cf",
+      "id": "14f50ff3-e074-4e93-a662-52d37ef799a8",
       "name": "Extract SKU & Quantities",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.5,
@@ -318,28 +323,13 @@
     },
     {
       "parameters": {
-        "assignments": {
-          "assignments": [
-            {
-              "id": "1b30eecf-a60b-4598-b676-1fd737cf0550",
-              "name": "pkl_items",
-              "value": "={{ JSON.parse($json.response).items }}",
-              "type": "array"
-            },
-            {
-              "id": "7bd823c3-69ee-44c7-903a-9d1fadc7eebc",
-              "name": "email_data",
-              "value": "={{ $('Gmail Trigger').item.json }}",
-              "type": "object"
-            }
-          ]
-        },
-        "options": {}
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse PKL LLM JSON and enforce our own checksum.\n\nconst allItems = [];\nlet docTotalFromSheet = null;\nlet llmReportedSum = null;\nlet llmChecksumOk = null;\n\nfunction extractJson(text) {\n  if (!text) return null;\n  text = text.replace(/```json[\\s\\S]*?```/gi, m => m.replace(/```json|```/gi, '')).trim();\n  if (!text.trim().startsWith('{')) {\n    const start = text.indexOf('{');\n    const end = text.lastIndexOf('}');\n    if (start !== -1 && end !== -1 && end > start) {\n      text = text.slice(start, end + 1);\n    }\n  }\n  try {\n    return JSON.parse(text);\n  } catch (e) {\n    return null;\n  }\n}\n\nfor (const item of $input.all()) {\n  const text = item.json.text || item.json.response || '';\n  const parsed = extractJson(text);\n  if (!parsed) continue;\n\n  if (Array.isArray(parsed.items)) {\n    allItems.push(...parsed.items);\n  }\n  if (parsed.doc_total_qty_from_sheet != null) {\n    docTotalFromSheet = Number(parsed.doc_total_qty_from_sheet);\n  }\n  if (parsed.qty_sum != null) {\n    llmReportedSum = Number(parsed.qty_sum);\n  }\n  if (typeof parsed.checksum_ok === 'boolean') {\n    llmChecksumOk = parsed.checksum_ok;\n  }\n}\n\n// Recompute sum ourselves\nconst recomputedSum = allItems.reduce(\n  (acc, it) => acc + (Number(it.qty_expected) || 0),\n  0\n);\n\nlet checksumOk = null;\nif (Number.isFinite(docTotalFromSheet)) {\n  checksumOk = recomputedSum === docTotalFromSheet;\n}\n\nreturn [{\n  json: {\n    pkl_items: allItems,\n    qty_sum: recomputedSum,\n    doc_total_qty: docTotalFromSheet,\n    checksum_ok: checksumOk,\n    llm_reported_sum: llmReportedSum,\n    llm_checksum_ok: llmChecksumOk\n  }\n}];"
       },
-      "id": "dc611bed-986d-4b82-994a-437af1a24e7a",
+      "id": "76c278ee-cfe1-4862-b8f6-c80fd70193d5",
       "name": "Parse PKL Response",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         1224,
         208
@@ -347,14 +337,13 @@
     },
     {
       "parameters": {
-        "mode": "combine",
-        "combineBy": "combineByPosition",
-        "options": {}
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Combine container numbers and PKL items from both parse nodes\n// This handles timing delays by waiting for all inputs\nlet containerNumbers = [];\nlet pklItems = [];\n\n// Process all input items - they may come from either parse node\nfor (const item of $input.all()) {\n  const json = item.json || {};\n  \n  // Check if this item has container_numbers (from Parse Container Response)\n  if (json.container_numbers && Array.isArray(json.container_numbers)) {\n    containerNumbers = json.container_numbers;\n  }\n  \n  // Check if this item has pkl_items (from Parse PKL Response)\n  if (json.pkl_items && Array.isArray(json.pkl_items)) {\n    pklItems = json.pkl_items;\n  }\n}\n\n// Return combined result\nreturn [{\n  json: {\n    container_numbers: containerNumbers,\n    pkl_items: pklItems\n  }\n}];"
       },
-      "id": "65c77bb9-703c-4913-bebc-41bd587898cc",
+      "id": "94b67068-a393-4624-adf9-b2b0be7cc686",
       "name": "Merge Results",
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         1448,
         112
@@ -365,40 +354,22 @@
         "assignments": {
           "assignments": [
             {
-              "id": "a3891a1b-ede8-4f66-8734-60af1c99a322",
+              "id": "cf3bc389-2ba0-40cb-b6dd-1dd3f9a0fd17",
               "name": "container_numbers",
-              "value": "={{ $json[0].json.container_numbers || [] }}",
+              "value": "={{ $json.container_numbers || [] }}",
               "type": "array"
             },
             {
-              "id": "9c20a9ca-bcc2-4499-ba5e-1dd4401ce01b",
+              "id": "a2c34a7d-55dc-471c-b6bc-0be784d318f4",
               "name": "sku_items",
-              "value": "={{ $json[1].json.pkl_items || [] }}",
+              "value": "={{ $json.pkl_items || [] }}",
               "type": "array"
-            },
-            {
-              "id": "c976e0b5-7e0c-4e93-a46a-caf8ca68ffe7",
-              "name": "email_subject",
-              "value": "={{ $json[0].json.email_data.subject || '' }}",
-              "type": "string"
-            },
-            {
-              "id": "2558bf98-918d-42ef-9c36-f5ba76b59347",
-              "name": "email_date",
-              "value": "={{ $json[0].json.email_data.date || '' }}",
-              "type": "string"
-            },
-            {
-              "id": "f1b4787d-afd8-48ca-ba6e-82a45f2d9d55",
-              "name": "processed_at",
-              "value": "=2025-12-01T22:23:37.482610",
-              "type": "string"
             }
           ]
         },
         "options": {}
       },
-      "id": "530cf0e5-078f-4534-b7c5-4e5d2539c9f9",
+      "id": "e75385fa-23d9-4a73-b95e-006ed274793f",
       "name": "Format Output",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
@@ -479,7 +450,11 @@
             "type": "ai_languageModel",
             "index": 0
           }
-        ],
+        ]
+      ]
+    },
+    "OpenRouter Chat Model1": {
+      "ai_languageModel": [
         [
           {
             "node": "Extract SKU & Quantities",
@@ -548,14 +523,14 @@
       "main": [
         [
           {
-            "node": "Prepare PKL Data",
+            "node": "Normalize PKL Grid",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Prepare PKL Data": {
+    "Normalize PKL Grid": {
       "main": [
         [
           {
@@ -602,11 +577,12 @@
   },
   "pinData": {},
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "promptVersion": "2025-12-02-01"
   },
   "staticData": null,
   "tags": [],
   "triggerCount": 1,
-  "updatedAt": "2025-12-01T22:23:37.482610",
-  "versionId": "ab7f13a3-b398-4851-bfdd-fd21f7a9a530"
+  "updatedAt": "2025-12-03T13:30:38.374468",
+  "versionId": "dd3d6719-12fb-4b6f-b8c2-b5ee9f47d634"
 }
